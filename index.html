@@ -64,8 +64,8 @@
         #part-panel {
             position: fixed; right: 0; top: 0; bottom: 0; width: 340px;
             z-index: 50; pointer-events: none;
-            display: flex; flex-direction: column; justify-content: center;
-            padding: 40px 24px;
+            display: flex; flex-direction: column; justify-content: flex-start;
+            padding: 80px 24px 180px 24px;
         }
         #part-panel .part-title {
             font-family: 'Orbitron', monospace; font-size: 13px;
@@ -76,6 +76,7 @@
             display: flex; flex-direction: column; gap: 0;
             overflow-y: auto; overflow-x: hidden;
             scrollbar-width: none; /* Firefox */
+            pointer-events: auto;
         }
         #part-cards::-webkit-scrollbar { display: none; } /* Chrome/Safari/Edge */
         
@@ -96,8 +97,8 @@
             background: rgba(255,255,255,0.02);
             border: 1px solid rgba(255,255,255,0.06);
             border-left: 3px solid var(--part-color, #00d4ff);
-            border-radius: 6px; padding: 12px 16px;
-            margin-bottom: 8px;
+            border-radius: 6px; padding: 10px 14px;
+            margin-bottom: 6px;
             transition: all 0.3s ease;
             backdrop-filter: blur(10px);
         }
@@ -107,10 +108,10 @@
             color: #eee; letter-spacing: 2px;
         }
         .part-card .desc {
-            font-size: 12px; color: #666; margin-top: 4px; line-height: 1.4;
+            font-size: 11px; color: #666; margin-top: 3px; line-height: 1.3;
         }
         .part-card .stat {
-            font-size: 10px; color: #444; margin-top: 6px;
+            font-size: 9px; color: #444; margin-top: 5px;
             font-family: 'Rajdhani', monospace; letter-spacing: 1px;
         }
         .part-card .color-dot {
@@ -212,8 +213,8 @@
     <div id="controls">
         <span><span class="key">✊ FIST</span> ASSEMBLE</span>
         <span><span class="key">🖐 OPEN</span> DECONSTRUCT</span>
-        <span><span class="key">☝ POINT</span> ORBIT CAMERA</span>
-        <span><span class="key">🙌 2 HANDS</span> ZOOM IN / OUT</span>
+        <span><span class="key">☝ POINT</span> / <span class="key">✌ V-SIGN</span> ORBIT CAMERA</span>
+        <span><span class="key">🙌 2 HANDS</span> ZOOM & PAN UP/DOWN</span>
         <span><span class="key">👋 FAST SWIPE</span> EXPLOSION</span>
     </div>
 
@@ -318,12 +319,15 @@
         const vertexShader = `
             attribute vec3 startPosition;
             attribute vec3 targetPosition;
+            attribute float partIndex;
             uniform float uMorphProgress;
             uniform float uPointSize;
             uniform float uTime;
             uniform float uExplode;
+            uniform float uHoveredIndex;
             varying vec3 vColor;
             varying float vAlpha;
+            varying float vHighlight;
 
             void main() {
                 vec3 morphed = mix(startPosition, targetPosition, uMorphProgress);
@@ -340,6 +344,7 @@
                 
                 vColor = color;
                 vAlpha = 0.5 + 0.3 * uMorphProgress;
+                vHighlight = (abs(partIndex - uHoveredIndex) < 0.5) ? 1.0 : 0.0;
                 
                 vec4 mvPosition = modelViewMatrix * vec4(morphed, 1.0);
                 gl_PointSize = uPointSize * (280.0 / -mvPosition.z) * (1.0 + uExplode * 2.0);
@@ -351,13 +356,18 @@
         const fragmentShader = `
             varying vec3 vColor;
             varying float vAlpha;
+            varying float vHighlight;
             void main() {
                 float d = length(gl_PointCoord - 0.5);
                 if (d > 0.5) discard;
                 float alpha = vAlpha * smoothstep(0.5, 0.15, d);
-                // Bright core
-                float core = smoothstep(0.2, 0.0, d) * 0.4;
-                gl_FragColor = vec4(vColor + core, alpha);
+                // Bright core + highlight boost
+                float core = smoothstep(0.2, 0.0, d) * (0.4 + vHighlight * 0.4);
+                vec3 finalColor = vColor + core;
+                if (vHighlight > 0.5) {
+                    finalColor += vec3(0.1, 0.1, 0.1); // Subtle white boost for highlight
+                }
+                gl_FragColor = vec4(finalColor, alpha + vHighlight * 0.2);
             }
         `;
 
@@ -366,12 +376,14 @@
         geometry.setAttribute('startPosition', new THREE.BufferAttribute(startPos, 3));
         geometry.setAttribute('targetPosition', new THREE.BufferAttribute(targetPos, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geometry.setAttribute('partIndex', new THREE.BufferAttribute(partIndex, 1));
 
         const uniforms = {
             uMorphProgress: { value: 0.0 },
             uPointSize: { value: 1.4 },
             uTime: { value: 0.0 },
-            uExplode: { value: 0.0 }
+            uExplode: { value: 0.0 },
+            uHoveredIndex: { value: -1.0 }
         };
 
         const material = new THREE.ShaderMaterial({
@@ -393,10 +405,12 @@
         let autoRotateSpeed = 0.002;
         let targetTilt = 0.6;
         let targetZoom = 130;
+        let targetPanY = 12;
         let activeExplosion = 0;
         
         // Smoothed values
         let smoothMorph = 0;
+        let smoothPanY = 12;
         let cameraDistance = 130;
         let cameraAngleY = 0;
         let cameraAngleX = 0.6;
@@ -405,6 +419,7 @@
         let lastHandX = null;
         let lastHandY = null;
         let lastHandsDist = null;
+        let lastHandsY = null;
         let lastWristX = 0;
         let lastTime = Date.now();
 
@@ -420,6 +435,8 @@
                 const card = document.createElement('div');
                 card.className = 'part-card';
                 card.style.setProperty('--part-color', def.color);
+                card.onmouseenter = () => { if (uniforms) uniforms.uHoveredIndex.value = stats.id; };
+                card.onmouseleave = () => { if (uniforms) uniforms.uHoveredIndex.value = -1; };
                 card.innerHTML = `
                     <div class="name"><span class="color-dot" style="background:${def.color}"></span>${def.label}</div>
                     <div class="desc">${def.desc}</div>
@@ -508,7 +525,7 @@
                         await new Promise(resolve => setTimeout(resolve, 0));
                     }
 
-                    usedParts[groupName] = { particles: pIdx - groupStart };
+                    usedParts[groupName] = { particles: pIdx - groupStart, id: groupIdx };
                     groupIdx++;
                     
                     // Update progress bar smoothly
@@ -532,6 +549,7 @@
                 // Final buffer updates
                 geometry.attributes.targetPosition.needsUpdate = true;
                 geometry.attributes.color.needsUpdate = true;
+                geometry.attributes.partIndex.needsUpdate = true;
             }
 
             processParticles().then(() => {
@@ -580,70 +598,107 @@
                 
                 hands.onResults((res) => {
                     if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
-                        const lm = res.multiHandLandmarks[0];
-                        const twoHands = res.multiHandLandmarks.length === 2;
                         const now = Date.now();
                         const dt = Math.max(1, now - lastTime);
+                        const getDist = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
 
-                        // 1. Fist (Assemble)
-                        const isFist = [8, 12, 16, 20].every(i => lm[i].y > lm[i - 2].y);
-                        
-                        // 2. Pointing Index Finger (Orbit Camera)
-                        // Index is UP (8 < 6), Middle/Ring/Pinky are DOWN (12 > 10, 16 > 14, 20 > 18)
-                        const isPointing = lm[8].y < lm[6].y && lm[12].y > lm[10].y && lm[16].y > lm[14].y && lm[20].y > lm[18].y;
+                        // Gesture Helpers
+                        const _isFist = (lm) => [8, 12, 16, 20].every(i => getDist(lm[i], lm[0]) < getDist(lm[i - 2], lm[0]));
+                        const _isPointing = (lm) => {
+                            const indexExt = getDist(lm[8], lm[0]) > getDist(lm[6], lm[0]);
+                            const middleCurled = getDist(lm[12], lm[0]) < getDist(lm[10], lm[0]);
+                            return indexExt && middleCurled;
+                        };
+                        const _isPeace = (lm) => {
+                            const indexExt = getDist(lm[8], lm[0]) > getDist(lm[6], lm[0]);
+                            const middleExt = getDist(lm[12], lm[0]) > getDist(lm[10], lm[0]);
+                            const ringCurled = getDist(lm[16], lm[0]) < getDist(lm[14], lm[0]);
+                            return indexExt && middleExt && ringCurled;
+                        };
 
-                        interactionTarget = isFist ? 1 : 0;
+                        let foundFist = false;
+                        let rotateHand = null;
+                        let rotatePoint = null; // Landmark to use for rotation tracking
+                        let foundSwipe = false;
+
+                        // Check all hands for gestures
+                        res.multiHandLandmarks.forEach((lm) => {
+                            if (_isFist(lm)) {
+                                foundFist = true;
+                                if (!rotateHand) { rotateHand = lm; rotatePoint = lm[0]; } // Fist can rotate if no pointer
+                            }
+                            if (_isPointing(lm) || _isPeace(lm)) {
+                                rotateHand = lm;
+                                rotatePoint = lm[8]; // Index tip for pointing
+                            }
+
+                            // Explosion check (Swipe velocity)
+                            const wristVel = Math.abs(lm[0].x - (lm === res.multiHandLandmarks[0] ? lastWristX : lm[0].x)) / dt;
+                            if (wristVel > 0.015 && activeExplosion < 0.1 && dt > 5) foundSwipe = true;
+                        });
+
+                        // 1. Update Mode
+                        interactionTarget = foundFist ? 1 : 0;
                         updateModeBadge();
 
-                        if (twoHands) {
-                            // Two Hands: Zoom by moving hands apart or together
+                        // 2. Camera Controls
+                        const twoHands = res.multiHandLandmarks.length === 2;
+                        
+                        // Prioritize Rotate or Zoom
+                        if (rotateHand && rotatePoint) {
+                            // Rotation takes priority if pointing OR fisting
+                            lastHandsDist = null;
+                            if (lastHandX !== null) {
+                                targetAngleY -= (rotatePoint.x - lastHandX) * Math.PI * 1.5;
+                                targetTilt += (rotatePoint.y - lastHandY) * 2.0;
+                                targetTilt = Math.max(-0.2, Math.min(1.4, targetTilt));
+                            }
+                            lastHandX = rotatePoint.x;
+                            lastHandY = rotatePoint.y;
+                            autoRotateSpeed = 0;
+                        } else if (twoHands && !foundFist) {
+                            // Zoom & Pan if two hands are visible and NOT gesturing specifically
                             const h1 = res.multiHandLandmarks[0][0];
                             const h2 = res.multiHandLandmarks[1][0];
                             const dist = Math.sqrt(Math.pow(h1.x - h2.x, 2) + Math.pow(h1.y - h2.y, 2));
+                            const midY = (h1.y + h2.y) / 2;
+
                             if (lastHandsDist !== null) {
+                                // Zoom
                                 targetZoom -= (dist - lastHandsDist) * 300.0;
                                 targetZoom = Math.max(40, Math.min(250, targetZoom));
+                                
+                                // Pan Up/Down
+                                targetPanY -= (midY - lastHandsY) * 150.0;
+                                targetPanY = Math.max(-20, Math.min(60, targetPanY));
                             }
                             lastHandsDist = dist;
-                            lastHandX = null; // Pause rotation while zooming
+                            lastHandsY = midY;
+                            lastHandX = null;
                             lastHandY = null;
-                        } else if (isPointing) {
-                            // Single Pointing Hand: Orbit camera & Tilt using relative dragging
-                            lastHandsDist = null;
-                            if (lastHandX !== null) {
-                                targetAngleY -= (lm[8].x - lastHandX) * Math.PI * 1.5;
-                                targetTilt += (lm[8].y - lastHandY) * 2.0;
-                                targetTilt = Math.max(-0.2, Math.min(1.4, targetTilt)); // Clamp tilt
-                            }
-                            lastHandX = lm[8].x; // Track the index fingertip instead of the wrist
-                            lastHandY = lm[8].y;
-                            autoRotateSpeed = 0; // Stop auto-rotation while dragging
                         } else {
-                            // Open Hand or undefined gesture: Idle state (auto-rotate slowly)
+                            // Idle/Reset
                             lastHandX = null;
                             lastHandY = null;
                             lastHandsDist = null;
+                            lastHandsY = null;
                             autoRotateSpeed = 0.002;
                         }
 
-                        // Fast Swipe (Explosion Burst) - increased required velocity
-                        const wristVel = Math.abs(lm[0].x - lastWristX) / dt;
-                        if (wristVel > 0.015 && activeExplosion < 0.1 && dt > 5) {
-                            activeExplosion = 1.0; // Trigger burst
-                            interactionTarget = 0; // Force deconstruct
+                        // 3. Explosion Execution
+                        if (foundSwipe) {
+                            activeExplosion = 1.0;
+                            interactionTarget = 0; 
                             modeBadge.textContent = 'EXPLOSION OVERRIDE';
                             modeBadge.className = 'mode-deconstructed';
                             modeBadge.style.color = '#ff0044';
                             modeBadge.style.borderColor = '#ff0044';
                         }
 
-                        lastWristX = lm[0].x;
+                        lastWristX = res.multiHandLandmarks[0][0].x;
                         lastTime = now;
                     } else {
-                        // Return to resting state if no hands
-                        lastHandX = null;
-                        lastHandY = null;
-                        lastHandsDist = null;
+                        lastHandX = null; lastHandY = null; lastHandsDist = null;
                         autoRotateSpeed = 0.002;
                     }
                 });
@@ -720,11 +775,12 @@
             
             cameraAngleX += (targetTilt - cameraAngleX) * 0.1;
             cameraDistance += (targetZoom - cameraDistance) * 0.1;
+            smoothPanY += (targetPanY - smoothPanY) * 0.1;
             
             camera.position.x = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
-            camera.position.y = Math.sin(cameraAngleX) * cameraDistance + 20; // Increased base height offset
+            camera.position.y = Math.sin(cameraAngleX) * cameraDistance + smoothPanY;
             camera.position.z = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
-            camera.lookAt(0, 12, 0); // Looking slightly higher on the car
+            camera.lookAt(0, smoothPanY, 0); 
 
             renderer.render(scene, camera);
         }
