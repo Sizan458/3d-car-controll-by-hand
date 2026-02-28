@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script type="importmap">
+{
+    "imports": {
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/"
+    }
+}
+</script>
+</head>
+<body>
+<script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js';
+    console.log(THREE.REVISION, GLTFLoader, MeshSurfaceSampler);
+</script>
+</body>
+</html>

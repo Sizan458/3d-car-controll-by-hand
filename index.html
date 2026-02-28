@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rayfield Caliburn — Particle Deconstructor</title>
+    
+    <script src="./vendor/mediapipe/camera_utils.js"></script>
+    <script src="./vendor/mediapipe/hands/hands.js"></script>
+    <link href="./vendor/fonts/fonts.css" rel="stylesheet">
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #050510; font-family: 'Rajdhani', sans-serif; }
+
+        /* --- Loading Screen --- */
+        #loading {
+            position: fixed; inset: 0; z-index: 200;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            background: #050510;
+            transition: opacity 0.8s ease, visibility 0.8s ease;
+        }
+        #loading.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+        #loading h1 {
+            font-family: 'Orbitron', monospace;
+            font-size: 28px; color: #00d4ff; letter-spacing: 8px;
+            text-shadow: 0 0 30px rgba(0,212,255,0.5);
+        }
+        #loading .bar-container {
+            width: 300px; height: 3px; background: rgba(255,255,255,0.1);
+            border-radius: 2px; margin-top: 24px; overflow: hidden;
+        }
+        #loading .bar {
+            width: 0%; height: 100%; background: linear-gradient(90deg, #00d4ff, #ff0044);
+            border-radius: 2px; transition: width 0.3s ease;
+        }
+        #loading .sub { color: #555; font-size: 13px; margin-top: 12px; letter-spacing: 3px; }
+
+        /* --- HUD Status --- */
+        #status-hud {
+            position: fixed; top: 24px; left: 28px; z-index: 50;
+            pointer-events: none;
+        }
+        #status-hud .title {
+            font-family: 'Orbitron', monospace; font-size: 16px;
+            color: #00d4ff; letter-spacing: 4px; opacity: 0.9;
+            text-shadow: 0 0 10px rgba(0,212,255,0.3);
+        }
+        #status-hud .subtitle {
+            font-size: 12px; color: #444; letter-spacing: 4px; margin-top: 4px;
+        }
+        #mode-badge {
+            display: inline-block; margin-top: 10px;
+            padding: 4px 14px; border-radius: 3px;
+            font-family: 'Orbitron', monospace; font-size: 11px;
+            letter-spacing: 3px; border: 1px solid;
+            transition: all 0.4s ease;
+        }
+        .mode-deconstructed { color: #ff3b3b; border-color: #ff3b3b40; background: #ff3b3b10; }
+        .mode-assembled { color: #00ffcc; border-color: #00ffcc40; background: #00ffcc10; }
+
+        /* --- Part Details Panel (Right Sidebar - PC Default) --- */
+        #part-panel {
+            position: fixed; right: 0; top: 0; bottom: 0; width: 340px;
+            z-index: 50; pointer-events: none;
+            display: flex; flex-direction: column; justify-content: center;
+            padding: 40px 24px;
+        }
+        #part-panel .part-title {
+            font-family: 'Orbitron', monospace; font-size: 13px;
+            color: #00d4ff; letter-spacing: 4px; margin-bottom: 16px;
+            opacity: 0.7;
+        }
+        #part-cards {
+            display: flex; flex-direction: column; gap: 0;
+            overflow-y: auto; overflow-x: hidden;
+            scrollbar-width: none; /* Firefox */
+        }
+        #part-cards::-webkit-scrollbar { display: none; } /* Chrome/Safari/Edge */
+        
+        #error-log {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(255, 0, 0, 0.8);
+            color: white;
+            padding: 5px 10px;
+            font-family: monospace;
+            font-size: 10px;
+            z-index: 10000;
+            max-width: 80%;
+            display: none;
+        }
+        .part-card {
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-left: 3px solid var(--part-color, #00d4ff);
+            border-radius: 6px; padding: 12px 16px;
+            margin-bottom: 8px;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+        }
+        .part-card:hover { pointer-events: auto; background: rgba(255,255,255,0.05); }
+        .part-card .name {
+            font-family: 'Orbitron', monospace; font-size: 11px;
+            color: #eee; letter-spacing: 2px;
+        }
+        .part-card .desc {
+            font-size: 12px; color: #666; margin-top: 4px; line-height: 1.4;
+        }
+        .part-card .stat {
+            font-size: 10px; color: #444; margin-top: 6px;
+            font-family: 'Rajdhani', monospace; letter-spacing: 1px;
+        }
+        .part-card .color-dot {
+            display: inline-block; width: 8px; height: 8px;
+            border-radius: 50%; margin-right: 6px; vertical-align: middle;
+        }
+
+        /* --- Controls info --- */
+        #controls {
+            position: fixed; bottom: 20px; left: 28px; z-index: 50;
+            pointer-events: none;
+        }
+        #controls span {
+            display: block; font-size: 11px; color: #333;
+            letter-spacing: 2px; line-height: 1.8;
+        }
+        #controls .key {
+            display: inline-block; padding: 2px 8px;
+            border: 1px solid #333; border-radius: 3px;
+            color: #555; font-family: 'Orbitron', monospace;
+            font-size: 9px; margin-right: 4px;
+        }
+
+        /* --- Webcam --- */
+        #webcam-container {
+            position: fixed; bottom: 20px; right: 20px;
+            width: 180px; height: 135px;
+            border: 1px solid #00d4ff40; border-radius: 8px;
+            overflow: hidden; z-index: 50; transform: scaleX(-1);
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.15);
+        }
+        #input_video { width: 100%; height: 100%; object-fit: cover; }
+        .hidden { display: none !important; }
+
+        /* --- Responsive / Laptop & Tablets --- */
+        @media (max-width: 1400px) {
+            #part-panel {
+                top: auto; bottom: 0; right: 0; left: 0;
+                width: 100%; height: auto;
+                flex-direction: column; justify-content: flex-end;
+                padding: 16px 0;
+                background: linear-gradient(0deg, #050510 30%, transparent 100%);
+            }
+            #part-panel .part-title { display: none; }
+            #part-cards {
+                display: flex; flex-direction: row; gap: 8px;
+                overflow-x: auto; overflow-y: hidden; padding: 0 16px;
+            }
+            .part-card {
+                min-width: 220px; max-width: 220px; margin-bottom: 0; flex-shrink: 0;
+                padding: 10px 14px;
+            }
+            .part-card .desc {
+                font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            }
+        }
+
+        /* --- Responsive / Mobile --- */
+        @media (max-width: 768px) {
+            #status-hud { top: 16px; left: 16px; }
+            #status-hud .title { font-size: 14px; }
+            #status-hud .subtitle { font-size: 10px; }
+            #mode-badge { font-size: 9px; padding: 3px 10px; margin-top: 6px; }
+
+            #webcam-container {
+                top: 16px; right: 16px; bottom: auto;
+                width: 120px; height: 90px;
+            }
+            #controls { bottom: 120px; left: 16px; }
+            #controls span { font-size: 9px; }
+        }
+    </style>
+</head>
+<body>
+
+
+    <!-- Loading Screen -->
+    <div id="error-log"></div>
+    <div id="loading">
+        <h1>CALIBURN</h1>
+        <div class="bar-container"><div class="bar" id="load-bar"></div></div>
+        <div class="sub">INITIALIZING PARTICLE MATRIX</div>
+    </div>
+
+    <!-- HUD -->
+    <div id="status-hud">
+        <div class="title">RAYFIELD CALIBURN</div>
+        <div class="subtitle">PARTICLE DECONSTRUCTOR</div>
+        <div id="mode-badge" class="mode-deconstructed">DECONSTRUCTED</div>
+    </div>
+
+    <!-- Part Details Panel -->
+    <div id="part-panel">
+        <div class="part-title">⬡ COMPONENT MAP</div>
+        <div id="part-cards"></div>
+    </div>
+
+    <!-- Controls -->
+    <div id="controls">
+        <span><span class="key">✊ FIST</span> ASSEMBLE</span>
+        <span><span class="key">🖐 OPEN</span> DECONSTRUCT</span>
+        <span><span class="key">☝ POINT</span> ORBIT CAMERA</span>
+        <span><span class="key">🙌 2 HANDS</span> ZOOM IN / OUT</span>
+        <span><span class="key">👋 FAST SWIPE</span> EXPLOSION</span>
+    </div>
+
+    <!-- Webcam -->
+    <div id="webcam-container"><video id="input_video" playsinline></video></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "./vendor/three/three.module.js",
+                "three/addons/": "./vendor/three/addons/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        // Global error logging for offline debugging
+        window.onerror = (msg, url, line) => {
+            const errEl = document.getElementById('error-log');
+            errEl.style.display = 'block';
+            errEl.textContent = `ERR: ${msg} (Line ${line})`;
+            console.error(msg, url, line);
+        };
+
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js';
+
+        // --- DOM Refs ---
+        const loadingEl = document.getElementById('loading');
+        const loadBar = document.getElementById('load-bar');
+        const modeBadge = document.getElementById('mode-badge');
+        const partCardsEl = document.getElementById('part-cards');
+        const videoEl = document.getElementById('input_video');
+        const webcamEl = document.getElementById('webcam-container');
+
+        // --- Part Definitions with colors, descriptions, and specs ---
+        const PART_DEFS = {
+            'SM_Base':       { label: 'BODY SHELL',       color: '#00d4ff', desc: 'Carbon-ceramic monocoque chassis with aerodynamic body panels', spec: 'Carbon Fiber Composite' },
+            'SM_Engine':     { label: 'POWER UNIT',       color: '#ff3366', desc: 'Twin-turbo hybrid combustion engine producing 1,200 bhp', spec: '1,200 BHP | Twin-Turbo V12' },
+            'SM_FrontKit':   { label: 'FRONT AERO KIT',   color: '#00ff88', desc: 'Active aerodynamic front splitter with adjustable flaps', spec: 'Active Aero | 350kg Downforce' },
+            'SM_Hood':       { label: 'ENGINE HOOD',      color: '#ffaa00', desc: 'Lightweight vented hood with integrated NACA ducts', spec: '3.2kg Carbon Panel' },
+            'SM_Interior':   { label: 'INTERIOR CABIN',   color: '#aa66ff', desc: 'Minimalist cockpit with holographic HUD and racing harness', spec: 'Alcantara + Carbon Trim' },
+            'SM_RearKit':    { label: 'REAR DIFFUSER',    color: '#ff6600', desc: 'Multi-channel rear diffuser with active exhaust system', spec: 'Active Diffuser + DRS Flap' },
+            'SM_Root':       { label: 'STRUCTURAL FRAME', color: '#0088ff', desc: 'High-tensile aluminium space frame and roll cage', spec: 'Aluminium-Titanium Alloy' },
+            'SM_Tyre':       { label: 'TIRES',            color: '#888888', desc: 'Ultra-high-performance semi-slick compound tires', spec: '305/30 ZR21 Front | 355/25 ZR22 Rear' },
+            'SM_Brake_F':    { label: 'FRONT BRAKES',     color: '#ff2244', desc: 'Carbon-ceramic brake calipers with 6-piston setup', spec: '420mm Discs | 6-Piston' },
+            'SM_Brake_R':    { label: 'REAR BRAKES',      color: '#cc1133', desc: 'Carbon-ceramic rear brake calipers with 4-piston setup', spec: '380mm Discs | 4-Piston' },
+            'SM_Disk':       { label: 'BRAKE DISCS',      color: '#cccccc', desc: 'Cross-drilled carbon-ceramic ventilated brake rotors', spec: 'Carbon-Ceramic | Cross-Drilled' },
+            'SM_Hub':        { label: 'WHEEL HUBS',       color: '#dd8800', desc: 'Forged magnesium center-lock wheel hubs', spec: 'Magnesium Alloy | Center-Lock' },
+        };
+
+        // Map mesh parent group names to part definitions
+        function getPartDef(nodeName) {
+            for (const [prefix, def] of Object.entries(PART_DEFS)) {
+                if (nodeName.startsWith(prefix)) return def;
+            }
+            return { label: 'COMPONENT', color: '#555555', desc: 'Vehicle sub-component', spec: '' };
+        }
+
+        // --- Performance & Particle Data ---
+        // Adaptive particle count based on screen size to optimize mobile GPUs
+        const isMobileDevice = window.innerWidth < 768;
+        
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 4000);
+        camera.position.set(0, 35, 110);
+        camera.lookAt(0, 10, 0);
+
+        // Optimize WebGLRenderer for mobile: disable antialias (points don't need it), clamp pixel ratio
+        const renderer = new THREE.WebGLRenderer({ 
+            antialias: !isMobileDevice, 
+            powerPreference: 'high-performance', 
+            alpha: true 
+        });
+        renderer.setSize(innerWidth, innerHeight);
+        renderer.setPixelRatio(isMobileDevice ? 1.0 : Math.min(window.devicePixelRatio, 1.5));
+        renderer.setClearColor(0x050510);
+        document.body.appendChild(renderer.domElement);
+
+        // Aggressive low-end optimization: drastically lower particle count
+        const PARTICLE_COUNT = isMobileDevice ? 25000 : 100000;
+        const startPos = new Float32Array(PARTICLE_COUNT * 3);
+        const targetPos = new Float32Array(PARTICLE_COUNT * 3);
+        const colors = new Float32Array(PARTICLE_COUNT * 3);
+        const partIndex = new Float32Array(PARTICLE_COUNT); // which part group each particle belongs to
+
+        // Generate initial explosion
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            const i3 = i * 3;
+            const r = 200 + Math.random() * 150;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const sinPhi = Math.sin(phi);
+            startPos[i3]     = r * sinPhi * Math.cos(theta);
+            startPos[i3 + 1] = r * sinPhi * Math.sin(theta);
+            startPos[i3 + 2] = r * Math.cos(phi);
+        }
+
+        // --- GPU Shader Material ---
+        const vertexShader = `
+            attribute vec3 startPosition;
+            attribute vec3 targetPosition;
+            uniform float uMorphProgress;
+            uniform float uPointSize;
+            uniform float uTime;
+            uniform float uExplode;
+            varying vec3 vColor;
+            varying float vAlpha;
+
+            void main() {
+                vec3 morphed = mix(startPosition, targetPosition, uMorphProgress);
+                
+                // Subtle breathing animation when assembled
+                float breathe = sin(uTime * 0.5 + position.x * 0.1) * 0.15 * uMorphProgress;
+                morphed += normal * breathe;
+                
+                // Explosion burst effect (pushes outwards wildly)
+                if (uExplode > 0.0) {
+                    vec3 dir = normalize(startPosition) * (1.0 - uMorphProgress);
+                    morphed += dir * (sin(uTime * 20.0 + position.y) * 200.0 * uExplode);
+                }
+                
+                vColor = color;
+                vAlpha = 0.5 + 0.3 * uMorphProgress;
+                
+                vec4 mvPosition = modelViewMatrix * vec4(morphed, 1.0);
+                gl_PointSize = uPointSize * (280.0 / -mvPosition.z) * (1.0 + uExplode * 2.0);
+                gl_PointSize = max(gl_PointSize, 0.5);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const fragmentShader = `
+            varying vec3 vColor;
+            varying float vAlpha;
+            void main() {
+                float d = length(gl_PointCoord - 0.5);
+                if (d > 0.5) discard;
+                float alpha = vAlpha * smoothstep(0.5, 0.15, d);
+                // Bright core
+                float core = smoothstep(0.2, 0.0, d) * 0.4;
+                gl_FragColor = vec4(vColor + core, alpha);
+            }
+        `;
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(PARTICLE_COUNT * 3), 3));
+        geometry.setAttribute('startPosition', new THREE.BufferAttribute(startPos, 3));
+        geometry.setAttribute('targetPosition', new THREE.BufferAttribute(targetPos, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const uniforms = {
+            uMorphProgress: { value: 0.0 },
+            uPointSize: { value: 1.4 },
+            uTime: { value: 0.0 },
+            uExplode: { value: 0.0 }
+        };
+
+        const material = new THREE.ShaderMaterial({
+            vertexShader, fragmentShader, uniforms,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            depthWrite: false
+        });
+
+        const particleSystem = new THREE.Points(geometry, material);
+        particleSystem.frustumCulled = false;
+        scene.add(particleSystem);
+
+        // --- State ---
+        let modelLoaded = false;
+        let interactionTarget = 0;
+        let targetAngleY = 0;
+        let autoRotateSpeed = 0.002;
+        let targetTilt = 0.6;
+        let targetZoom = 130;
+        let activeExplosion = 0;
+        
+        // Smoothed values
+        let smoothMorph = 0;
+        let cameraDistance = 130;
+        let cameraAngleY = 0;
+        let cameraAngleX = 0.6;
+
+        // Gesture tracking
+        let lastHandX = null;
+        let lastHandY = null;
+        let lastHandsDist = null;
+        let lastWristX = 0;
+        let lastTime = Date.now();
+
+        // --- Build Part Cards UI ---
+        function buildPartCards(usedParts) {
+            partCardsEl.innerHTML = '';
+            const seen = new Set();
+            for (const [groupName, stats] of Object.entries(usedParts)) {
+                const def = getPartDef(groupName);
+                if (seen.has(def.label)) continue;
+                seen.add(def.label);
+
+                const card = document.createElement('div');
+                card.className = 'part-card';
+                card.style.setProperty('--part-color', def.color);
+                card.innerHTML = `
+                    <div class="name"><span class="color-dot" style="background:${def.color}"></span>${def.label}</div>
+                    <div class="desc">${def.desc}</div>
+                    <div class="stat">${def.spec} ${stats.particles ? '| ' + stats.particles.toLocaleString() + ' particles' : ''}</div>
+                `;
+                partCardsEl.appendChild(card);
+            }
+        }
+
+        // --- Load Model ---
+        const loader = new GLTFLoader();
+        loader.load('car.glb', (gltf) => {
+            loadBar.style.width = '60%';
+            gltf.scene.updateMatrixWorld(true);
+
+            // Collect mesh groups by parent node name
+            const meshGroups = {}; // parentName -> [{mesh, area}]
+            let totalArea = 0;
+
+            gltf.scene.traverse((child) => {
+                if (child.isMesh) { 
+                    // Find parent group name (e.g., SM_Engine_0000.001_1)
+                    let groupName = 'Unknown';
+                    let parent = child.parent;
+                    while (parent) {
+                        if (parent.name && parent.name.startsWith('SM_')) {
+                            groupName = parent.name;
+                            break;
+                        }
+                        parent = parent.parent;
+                    }
+
+                    child.geometry.computeBoundingBox();
+                    const sz = new THREE.Vector3();
+                    child.geometry.boundingBox.getSize(sz);
+                    const area = (sz.x * sz.y) + (sz.y * sz.z) + (sz.z * sz.x);
+                    totalArea += area;
+
+                    if (!meshGroups[groupName]) meshGroups[groupName] = [];
+                    meshGroups[groupName].push({ mesh: child, area });
+                }
+            });
+
+            loadBar.style.width = '80%';
+
+            const scale = 20.0;
+            let pIdx = 0;
+            const tempV = new THREE.Vector3();
+            const usedParts = {};
+            let groupIdx = 0;
+            const groups = Object.entries(meshGroups);
+
+            // Process parts asynchronously to avoid freezing the browser on load
+            async function processParticles() {
+                for (let g = 0; g < groups.length; g++) {
+                    const [groupName, meshes] = groups[g];
+                    const def = getPartDef(groupName);
+                    const col = new THREE.Color(def.color);
+                    const groupStart = pIdx;
+
+                    for (const mObj of meshes) {
+                        const count = Math.max(10, Math.floor((mObj.area / totalArea) * PARTICLE_COUNT));
+                        const sampler = new MeshSurfaceSampler(mObj.mesh).build();
+
+                        for (let i = 0; i < count; i++) {
+                            if (pIdx >= PARTICLE_COUNT) break;
+                            sampler.sample(tempV);
+                            tempV.applyMatrix4(mObj.mesh.matrixWorld);
+
+                            const i3 = pIdx * 3;
+                            targetPos[i3]     = (tempV.x + (Math.random() - 0.5) * 0.015) * scale;
+                            targetPos[i3 + 1] = (tempV.y + (Math.random() - 0.5) * 0.015) * scale;
+                            targetPos[i3 + 2] = (tempV.z + (Math.random() - 0.5) * 0.015) * scale;
+
+                            // Slight color variation per particle for richness
+                            const variation = 0.85 + Math.random() * 0.3;
+                            colors[i3]     = col.r * variation;
+                            colors[i3 + 1] = col.g * variation;
+                            colors[i3 + 2] = col.b * variation;
+
+                            partIndex[pIdx] = groupIdx;
+                            pIdx++;
+                        }
+                        
+                        // Yield to main thread every mesh to keep loader animating smoothly
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+
+                    usedParts[groupName] = { particles: pIdx - groupStart };
+                    groupIdx++;
+                    
+                    // Update progress bar smoothly
+                    const pct = 80 + Math.floor((g / groups.length) * 15);
+                    loadBar.style.width = pct + '%';
+                }
+
+                // Fill remaining particles
+                if (pIdx > 0 && pIdx < PARTICLE_COUNT) {
+                    for (let i = pIdx; i < PARTICLE_COUNT; i++) {
+                        const srcIdx = Math.floor(Math.random() * pIdx);
+                        const i3 = i * 3;
+                        const s3 = srcIdx * 3;
+                        targetPos[i3]     = targetPos[s3] + (Math.random() - 0.5) * 0.3;
+                        targetPos[i3 + 1] = targetPos[s3 + 1] + (Math.random() - 0.5) * 0.3;
+                        targetPos[i3 + 2] = targetPos[s3 + 2] + (Math.random() - 0.5) * 0.3;
+                        colors[i3] = colors[s3]; colors[i3 + 1] = colors[s3 + 1]; colors[i3 + 2] = colors[s3 + 2];
+                    }
+                }
+
+                // Final buffer updates
+                geometry.attributes.targetPosition.needsUpdate = true;
+                geometry.attributes.color.needsUpdate = true;
+            }
+
+            processParticles().then(() => {
+                buildPartCards(usedParts);
+                loadBar.style.width = '100%';
+                setTimeout(() => {
+                    loadingEl.classList.add('hidden');
+                    modelLoaded = true;
+                }, 400);
+            }).catch(err => {
+                window.onerror("Particle Processing Failed: " + err.message, "Internal", 0);
+            });
+
+        }, (progress) => {
+            if (progress.total > 0) {
+                const pct = Math.floor((progress.loaded / progress.total) * 50);
+                loadBar.style.width = pct + '%';
+            }
+        }, () => {
+            loadBar.style.width = '100%';
+            document.querySelector('#loading .sub').textContent = 'ERROR: car.glb NOT FOUND';
+        });
+
+        // --- Controls ---
+        // Mouse controls removed per user request. Only hand tracking is active.
+
+        function updateModeBadge() {
+            if (interactionTarget > 0.5) {
+                modeBadge.textContent = 'ASSEMBLED';
+                modeBadge.className = 'mode-assembled';
+            } else {
+                modeBadge.textContent = 'DECONSTRUCTED';
+                modeBadge.className = 'mode-deconstructed';
+            }
+        }
+
+        // --- Hand Tracking ---
+        function initHandTracking() {
+            try {
+                if (typeof Hands === 'undefined' || typeof window.Camera === 'undefined') throw new Error('MediaPipe not loaded');
+                
+                const hands = new Hands({ locateFile: (file) => `./vendor/mediapipe/hands/${file}` });
+                // Use lite model (0) on mobile for better FPS, full model (1) on PC
+                const complexity = isMobileDevice ? 0 : 1;
+                hands.setOptions({ maxNumHands: 2, modelComplexity: complexity, minDetectionConfidence: 0.65 });
+                
+                hands.onResults((res) => {
+                    if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+                        const lm = res.multiHandLandmarks[0];
+                        const twoHands = res.multiHandLandmarks.length === 2;
+                        const now = Date.now();
+                        const dt = Math.max(1, now - lastTime);
+
+                        // 1. Fist (Assemble)
+                        const isFist = [8, 12, 16, 20].every(i => lm[i].y > lm[i - 2].y);
+                        
+                        // 2. Pointing Index Finger (Orbit Camera)
+                        // Index is UP (8 < 6), Middle/Ring/Pinky are DOWN (12 > 10, 16 > 14, 20 > 18)
+                        const isPointing = lm[8].y < lm[6].y && lm[12].y > lm[10].y && lm[16].y > lm[14].y && lm[20].y > lm[18].y;
+
+                        interactionTarget = isFist ? 1 : 0;
+                        updateModeBadge();
+
+                        if (twoHands) {
+                            // Two Hands: Zoom by moving hands apart or together
+                            const h1 = res.multiHandLandmarks[0][0];
+                            const h2 = res.multiHandLandmarks[1][0];
+                            const dist = Math.sqrt(Math.pow(h1.x - h2.x, 2) + Math.pow(h1.y - h2.y, 2));
+                            if (lastHandsDist !== null) {
+                                targetZoom -= (dist - lastHandsDist) * 300.0;
+                                targetZoom = Math.max(40, Math.min(250, targetZoom));
+                            }
+                            lastHandsDist = dist;
+                            lastHandX = null; // Pause rotation while zooming
+                            lastHandY = null;
+                        } else if (isPointing) {
+                            // Single Pointing Hand: Orbit camera & Tilt using relative dragging
+                            lastHandsDist = null;
+                            if (lastHandX !== null) {
+                                targetAngleY -= (lm[8].x - lastHandX) * Math.PI * 1.5;
+                                targetTilt += (lm[8].y - lastHandY) * 2.0;
+                                targetTilt = Math.max(-0.2, Math.min(1.4, targetTilt)); // Clamp tilt
+                            }
+                            lastHandX = lm[8].x; // Track the index fingertip instead of the wrist
+                            lastHandY = lm[8].y;
+                            autoRotateSpeed = 0; // Stop auto-rotation while dragging
+                        } else {
+                            // Open Hand or undefined gesture: Idle state (auto-rotate slowly)
+                            lastHandX = null;
+                            lastHandY = null;
+                            lastHandsDist = null;
+                            autoRotateSpeed = 0.002;
+                        }
+
+                        // Fast Swipe (Explosion Burst) - increased required velocity
+                        const wristVel = Math.abs(lm[0].x - lastWristX) / dt;
+                        if (wristVel > 0.015 && activeExplosion < 0.1 && dt > 5) {
+                            activeExplosion = 1.0; // Trigger burst
+                            interactionTarget = 0; // Force deconstruct
+                            modeBadge.textContent = 'EXPLOSION OVERRIDE';
+                            modeBadge.className = 'mode-deconstructed';
+                            modeBadge.style.color = '#ff0044';
+                            modeBadge.style.borderColor = '#ff0044';
+                        }
+
+                        lastWristX = lm[0].x;
+                        lastTime = now;
+                    } else {
+                        // Return to resting state if no hands
+                        lastHandX = null;
+                        lastHandY = null;
+                        lastHandsDist = null;
+                        autoRotateSpeed = 0.002;
+                    }
+                });
+                // Throttle camera resolution severely on mobile to save CPU and keep GPU free for particles
+                const camWidth = isMobileDevice ? 240 : 640;
+                const camHeight = isMobileDevice ? 160 : 480;
+                
+                // Process hand tracking with a slight throttle wrapper
+                let processing = false;
+                const cam = new window.Camera(videoEl, {
+                    onFrame: async () => {
+                        if (processing) return;
+                        processing = true;
+                        try {
+                            // Yield aggressively on low-end/mobile devices to keep WebGL smooth
+                            if (isMobileDevice) {
+                                await new Promise(r => setTimeout(r, 30));
+                            }
+                            await hands.send({ image: videoEl });
+                        } finally {
+                            processing = false;
+                        }
+                    },
+                    width: camWidth, height: camHeight
+                });
+                cam.start();
+            } catch (e) {
+                console.warn('Hand tracking unavailable:', e);
+                webcamEl.classList.add('hidden');
+            }
+        }
+
+        if (document.readyState === 'complete') initHandTracking();
+        else window.addEventListener('load', initHandTracking);
+
+        // --- Resize ---
+        let resizeTimeout;
+        window.addEventListener('resize', () => {
+            if (resizeTimeout) cancelAnimationFrame(resizeTimeout);
+            resizeTimeout = requestAnimationFrame(() => {
+                camera.aspect = innerWidth / innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(innerWidth, innerHeight);
+            });
+        });
+
+        // --- Animation Loop ---
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = clock.getDelta();
+            const elapsed = clock.getElapsedTime();
+
+            // Smooth morph (snappier transition)
+            smoothMorph += (interactionTarget - smoothMorph) * 0.12;
+            uniforms.uMorphProgress.value = smoothMorph;
+            uniforms.uTime.value = elapsed;
+
+            // Explosion decay
+            if (activeExplosion > 0) {
+                activeExplosion -= dt * 1.5;
+                if (activeExplosion < 0) activeExplosion = 0;
+            }
+            uniforms.uExplode.value = activeExplosion;
+
+            // Camera orbit & tilt & zoom
+            // Camera orbit & tilt & zoom
+            if (autoRotateSpeed > 0) {
+                cameraAngleY += autoRotateSpeed;
+                targetAngleY = cameraAngleY; // Keep synced so it doesn't snap when hand enters
+            } else {
+                cameraAngleY += (targetAngleY - cameraAngleY) * 0.1; // Smooth interpolate to hand dragging
+            }
+            
+            cameraAngleX += (targetTilt - cameraAngleX) * 0.1;
+            cameraDistance += (targetZoom - cameraDistance) * 0.1;
+            
+            camera.position.x = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+            camera.position.y = Math.sin(cameraAngleX) * cameraDistance + 20; // Increased base height offset
+            camera.position.z = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+            camera.lookAt(0, 12, 0); // Looking slightly higher on the car
+
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
